@@ -3,10 +3,26 @@ use std::fs::{OpenOptions, File};
 use fs2::FileExt;
 use std::io::{self, Write, Seek, SeekFrom};
 use std::path::Path;
-use std::process::Command;
+use std::time::{Duration, SystemTime};
 use serde::{Serialize, Deserialize};
+use notify_rust::{Notification, Timeout};
+use rodio::{Decoder, OutputStream, Sink};
 
 const TASK_FILE: &str = "tasks.json";
+const POMODORO_DURATION: Duration = Duration::from_secs(25 * 60);
+
+struct NotificationContent {
+    title: String,
+    body: String,
+}
+
+#[derive(Clone)]
+#[derive(Serialize)]
+#[derive(Deserialize)]
+struct Pomodoro {
+    start_time: SystemTime,
+    end_time: Option<SystemTime>,
+}
 
 #[derive(Clone)]
 #[derive(Serialize)]
@@ -14,9 +30,9 @@ const TASK_FILE: &str = "tasks.json";
 struct Task {
     id: u32,
     description: String,
-    time_spent: u32,
     done: bool,
     archived: bool,
+    pomodoros: Vec<Pomodoro>,
 }
 
 impl Task {
@@ -24,9 +40,44 @@ impl Task {
         Task {
             id,
             description,
-            time_spent: 0,
             done: false,
             archived: false,
+            pomodoros: Vec::new(),
+        }
+    }
+
+    fn time_spent(&self) -> Duration {
+        let mut time = Duration::new(0, 0);
+        for pomodoro in &self.pomodoros {
+            match pomodoro.end_time {
+                Some(end_time) => time += end_time.duration_since(pomodoro.start_time).unwrap(),
+                None => time += pomodoro.start_time.elapsed().unwrap(),
+            }
+        }
+        time
+    }
+
+    fn pomodoro_time_remaining(&self) -> Option<Duration> {
+        match self.pomodoros.last() {
+            Some(pomodoro) => {
+                match pomodoro.end_time {
+                    Some(_end_time) => None,
+                    None => Some(POMODORO_DURATION - pomodoro.start_time.elapsed().unwrap()),
+                }
+            },
+            None => None,
+        }
+    }
+
+    fn pomodoro_active(&self) -> bool {
+        match self.pomodoros.last() {
+            Some(pomodoro) => {
+                match pomodoro.end_time {
+                    Some(_end_time) => false,
+                    None => true,
+                }
+            },
+            None => false,
         }
     }
 }
@@ -34,6 +85,7 @@ impl Task {
 fn main() {
     let mut file = open_file();
     let mut tasks = read_tasks(&mut file);
+    let mut notifications: Vec<NotificationContent> = Vec::new();
 
     let args: Vec<String> = env::args().collect();
     if args.len() == 1 {
@@ -48,15 +100,33 @@ fn main() {
                 println!("No task ID specified.");
                 return;
             }
-            let task_id = match args[2].parse::<u32>() {
-                Ok(id) => id,
-                Err(_) => {
-                    println!("Invalid task ID.");
-                    return;
+            for arg in args.iter().skip(2) {
+                match arg.parse::<u32>() {
+                    Ok(id) => start_pomodoro(id, &mut tasks),
+                    Err(_) => {
+                        println!("Invalid task ID {}.", arg);
+                        return;
+                    }
                 }
             };
-            start_pomodoro(task_id, &mut tasks);
-        }
+            list_tasks(&tasks, false);
+        },
+        "--finish-pomodoro" | "-f" => {
+            if args.len() < 3 {
+                println!("No task ID specified.");
+                return;
+            }
+            for arg in args.iter().skip(2) {
+                match arg.parse::<u32>() {
+                    Ok(id) => finish_pomodoro(id, &mut tasks),
+                    Err(_) => {
+                        println!("Invalid task ID {}.", arg);
+                        return;
+                    }
+                }
+            };
+            list_tasks(&tasks, false);
+        },
         "--list" | "-l" => list_tasks(&tasks, false),
         "--list-archived" => list_tasks(&tasks, true),
         "--check" | "-c" => {
@@ -123,12 +193,16 @@ fn main() {
             };
             list_tasks(&tasks, false);
         }
+        "--notify" => {
+            compute_notifications(&mut tasks, &mut notifications);
+        }
         "--help" | "-h" => {
             println!("Usage: task [command] [arguments]");
             println!("Commands:");
             println!("  [no command]                List all tasks");
             println!("  [no command] [description]  Add a new task with the specified description");
             println!("  -p, --pomodoro [task ID]    Start a pomodoro for the specified task");
+            println!("  -f, --finish-pomodoro [task ID] Finish the pomodoro for the specified task");
             println!("  -l, --list                  List all tasks");
             println!("  --list-archived             List all archived tasks");
             println!("  -c, --check [task ID]       Check the specified task");
@@ -148,21 +222,55 @@ fn main() {
 
     write_tasks(&tasks, &mut file);
     drop(file);
+
+    display_notifications(notifications);
 }
 
 fn start_pomodoro(task_id: u32, tasks: &mut Vec<Task>) {
-    // Start timer for 25 minutes (1500 seconds)
-    let timer = 1500;
-
     // Update task time spent
     match tasks.iter_mut().find(|task| task.id == task_id) {
         Some(t) => {
-            t.time_spent += timer;
+            if t.pomodoro_active() {
+                println!("Pomodoro already active for task {}.", task_id);
+                return;
+            }
+
+            t.pomodoros.push(Pomodoro {
+                start_time: SystemTime::now(),
+                end_time: None,
+            });
             println!("Pomodoro started for task {}.", task_id);
         },
         None => {
             println!("Task {} not found.", task_id);
             return;
+        }
+    };
+}
+
+fn finish_pomodoro(task_id: u32, tasks: &mut Vec<Task>) {
+    // Update task time spent
+    match tasks.iter_mut().find(|task| task.id == task_id) {
+        Some(t) => {
+            match t.pomodoros.last_mut() {
+                Some(p) => {
+                    match p.end_time {
+                        Some(_) => {
+                            println!("No pomodoro active for task {}.", task_id);
+                        },
+                        None => {
+                            p.end_time = Some(SystemTime::now());
+                            println!("Pomodoro finished for task {}.", task_id);
+                        },
+                    }
+                },
+                None => {
+                    println!("No pomodoros found for task {}.", task_id);
+                }
+            }
+        },
+        None => {
+            println!("Task {} not found.", task_id);
         }
     };
 }
@@ -178,7 +286,11 @@ fn list_tasks(tasks: &[Task], list_archived: bool) {
             continue;
         }
         let status = if task.done { "x" } else { " " };
-        let task_str = format!("{:0>3} [{}]: {} (Σ{} min)", task.id, status, task.description, task.time_spent / 60);
+        let time = match task.pomodoro_time_remaining() {
+            None => format!("Σ{} min", task.time_spent().as_secs() / 60),
+            Some(t) => format!("{}m {:0>2}s", t.as_secs() / 60, t.as_secs() % 60),
+        };
+        let task_str = format!("{:0>3} [{}]: {} ({})", task.id, status, task.description, time);
         println!("{}", task_str);
     }
 }
@@ -274,4 +386,51 @@ fn write_tasks(tasks: &[Task], file: &mut File) {
     writer
         .write_all(serialized_tasks.as_bytes())
         .expect("Failed to write tasks.");
+}
+
+fn compute_notifications(tasks: &mut Vec<Task>, notifications: &mut Vec<NotificationContent>) {
+    for task in tasks {
+        match task.pomodoro_time_remaining() {
+            Some(t) => {
+                if t.as_secs() <= 0 {
+                    task.pomodoros.last_mut().unwrap().end_time = Some(task.pomodoros.last().unwrap().start_time + POMODORO_DURATION);
+                    notifications.push(NotificationContent {
+                        title: format!("Pomodoro finished for task {}.", task.id),
+                        body: task.description.clone(),
+                    });
+                }
+            },
+            None => {},
+        }
+    }
+}
+
+fn display_notifications(notifications: Vec<NotificationContent>) {
+    for notification in &notifications {
+        println!("{}: {}", notification.title, notification.body);
+        match Notification::new()
+            .summary(&notification.title)
+            .body(&notification.body)
+            .timeout(Timeout::Milliseconds(6000)) //milliseconds
+            .show() {
+                Ok(_) => {},
+                Err(e) => println!("Failed to display notification: {}", e),
+            }
+    }
+    if !notifications.is_empty() {
+        // Get a output stream handle to the default physical sound device
+        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+        let sink = Sink::try_new(&stream_handle).unwrap();
+        // Load a sound from a file, using a path relative to Cargo.toml
+        let file = io::BufReader::new(File::open("alarm.mp3").unwrap());
+        // Decode that sound file into a source
+        let source = Decoder::new(file).unwrap();
+        // Play the sound directly on the device
+        sink.append(source);
+
+        // The sound plays in a separate thread. This call will block the current thread until the sink
+        // has finished playing all its queued sounds.
+        sink.sleep_until_end();
+    }
+    
 }
