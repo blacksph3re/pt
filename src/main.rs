@@ -223,6 +223,9 @@ fn main() {
             println!("  -u, --uncheck [task ID]     Uncheck the specified task");
             println!("  -a, --archive [task ID]     Archive the specified task");
             println!("  --unarchive [task ID]       Unarchive the specified task");
+            println!("  --archive-checked           Archive all checked tasks");
+            println!("  --notify                    Display notifications for tasks that are due");
+            println!("  --test-notification         Display a test notification");
             println!("  -h, --help                  Display this help message");
             
         }
