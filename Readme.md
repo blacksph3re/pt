@@ -19,30 +19,37 @@ PT doesn't spawn any background processes, if you want to enable the timer funct
 The main command line interface is as follows:
 ```bash
 
- ~  pt Make tea
+# Add a task
+ ~> pt Make tea
 Task 1 added.
 001 [ ]: Make tea (Σ0 min)
- ~  pt -p 1
+# Start a pomodoro for task 1
+ ~> pt -p 1
 Pomodoro started for task 1.
 001 [ ]: Make tea (24m 59s)
- ~  pt Water plants
+# Add another task
+ ~> pt Water plants
 Task 2 added.
 001 [ ]: Make tea (24m 46s)
 002 [ ]: Water plants (Σ0 min)
- ~  pt -c 1
+# Check off task 1
+ ~> pt -c 1
 Task 1 checked.
 001 [x]: Make tea (24m 08s)
 002 [ ]: Water plants (Σ0 min)
- ~  pt -f 1
+# Finish the pomodoro timer on task 1, tracking 1 minute of work
+ ~> pt -f 1
 Pomodoro finished for task 1.
 001 [x]: Make tea (Σ1 min)
 002 [ ]: Water plants (Σ0 min)
- ~  pt Meditate
+# Add another task
+ ~> pt Meditate
 Task 3 added.
 001 [x]: Make tea (Σ0 min)
 002 [ ]: Water plants (Σ0 min)
 003 [ ]: Meditate (Σ0 min)
- ~  pt -p 2 3
+# Start pomodoros for tasks 2 and 3
+ ~> pt -p 2 3
 Pomodoro started for task 2.
 Pomodoro started for task 3.
 001 [x]: Make tea (Σ0 min)

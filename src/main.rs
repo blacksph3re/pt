@@ -131,6 +131,32 @@ fn main() {
             };
             list_tasks(&tasks, false);
         },
+        "--track" | "-t" => {
+            if args.len() < 3 {
+                println!("No task ID specified.");
+                return;
+            }
+            if args.len() < 4 {
+                println!("No time specified.");
+                return;
+            }
+            match args[2].parse::<u32>() {
+                Ok(id) => {
+                    match args[3].parse::<i64>() {
+                        Ok(time) => track_time(id, time, &mut tasks),
+                        Err(_) => {
+                            println!("Invalid time {}.", args[3]);
+                            return;
+                        }
+                    }
+                },
+                Err(_) => {
+                    println!("Invalid task ID {}.", args[2]);
+                    return;
+                }
+            };
+            list_tasks(&tasks, false);
+        },
         "--list" | "-l" => list_tasks(&tasks, false),
         "--list-archived" => list_tasks(&tasks, true),
         "--check" | "-c" => {
@@ -217,6 +243,7 @@ fn main() {
             println!("  [no command] [description]  Add a new task with the specified description");
             println!("  -p, --pomodoro [task ID]    Start a pomodoro for the specified task");
             println!("  -f, --finish-pomodoro [task ID] Finish the pomodoro for the specified task");
+            println!("  -t, --track [task ID] [time] Track the specified time for the specified task");
             println!("  -l, --list                  List all tasks");
             println!("  --list-archived             List all archived tasks");
             println!("  -c, --check [task ID]       Check the specified task");
@@ -288,6 +315,30 @@ fn finish_pomodoro(task_id: u32, tasks: &mut Vec<Task>) {
         },
         None => {
             println!("Task {} not found.", task_id);
+        }
+    };
+}
+
+fn track_time(task_id: u32, time: i64, tasks: &mut Vec<Task>) {
+    // Update task time spent
+    match tasks.iter_mut().find(|task| task.id == task_id) {
+        Some(t) => {
+            if t.pomodoro_active() {
+                t.pomodoros.insert(t.pomodoros.len() - 1, Pomodoro {
+                    start_time: Utc::now() - chrono::Duration::minutes(time),
+                    end_time: Some(Utc::now()),
+                });
+            } else {
+                t.pomodoros.push(Pomodoro {
+                    start_time: Utc::now() - chrono::Duration::minutes(time),
+                    end_time: Some(Utc::now()),
+                });
+            }
+            println!("Tracked {} minutes for task {}.", time, task_id);
+        },
+        None => {
+            println!("Task {} not found.", task_id);
+            return;
         }
     };
 }
