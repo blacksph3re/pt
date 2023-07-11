@@ -3,13 +3,17 @@ use std::fs::{OpenOptions, File};
 use fs2::FileExt;
 use std::io::{self, Write, Seek, SeekFrom};
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use chrono::{Duration, Utc, DateTime};
+
 use serde::{Serialize, Deserialize};
 use notify_rust::{Notification, Timeout};
 use rodio::{Decoder, OutputStream, Sink};
 
-const TASK_FILE: &str = "tasks.json";
-const POMODORO_DURATION: Duration = Duration::from_secs(25 * 60);
+// Will automatically add HOME to the path
+// Hence, the path will be /home/username/.pt/tasks.json and /home/username/.pt/alarm.mp3
+const TASK_FILE: &str = ".pt/tasks.json";
+const ALARM_FILE: &str = ".pt/alarm.mp3";
+const POMODORO_DURATION: i64 = 25;
 
 struct NotificationContent {
     title: String,
@@ -20,8 +24,8 @@ struct NotificationContent {
 #[derive(Serialize)]
 #[derive(Deserialize)]
 struct Pomodoro {
-    start_time: SystemTime,
-    end_time: Option<SystemTime>,
+    start_time: DateTime<Utc>,
+    end_time: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone)]
@@ -47,11 +51,11 @@ impl Task {
     }
 
     fn time_spent(&self) -> Duration {
-        let mut time = Duration::new(0, 0);
+        let mut time = Duration::zero();
         for pomodoro in &self.pomodoros {
             match pomodoro.end_time {
-                Some(end_time) => time += end_time.duration_since(pomodoro.start_time).unwrap(),
-                None => time += pomodoro.start_time.elapsed().unwrap(),
+                Some(end_time) => time = time + (end_time - pomodoro.start_time),
+                None => time = time + (Utc::now() - pomodoro.start_time),
             }
         }
         time
@@ -62,7 +66,7 @@ impl Task {
             Some(pomodoro) => {
                 match pomodoro.end_time {
                     Some(_end_time) => None,
-                    None => Some(POMODORO_DURATION - pomodoro.start_time.elapsed().unwrap()),
+                    None => Some(Duration::minutes(POMODORO_DURATION) - (Utc::now() - pomodoro.start_time)),
                 }
             },
             None => None,
@@ -193,8 +197,18 @@ fn main() {
             };
             list_tasks(&tasks, false);
         }
+        "--archive-checked" => {
+            archive_all_checked(&mut tasks);
+            list_tasks(&tasks, false);
+        }
         "--notify" => {
             compute_notifications(&mut tasks, &mut notifications);
+        }
+        "--test-notification" => {
+            notifications.push(NotificationContent {
+                title: "This is a test notification".to_string(),
+                body: "Here is some information about this test notification".to_string(),
+            });
         }
         "--help" | "-h" => {
             println!("Usage: task [command] [arguments]");
@@ -236,7 +250,7 @@ fn start_pomodoro(task_id: u32, tasks: &mut Vec<Task>) {
             }
 
             t.pomodoros.push(Pomodoro {
-                start_time: SystemTime::now(),
+                start_time: Utc::now(),
                 end_time: None,
             });
             println!("Pomodoro started for task {}.", task_id);
@@ -259,7 +273,7 @@ fn finish_pomodoro(task_id: u32, tasks: &mut Vec<Task>) {
                             println!("No pomodoro active for task {}.", task_id);
                         },
                         None => {
-                            p.end_time = Some(SystemTime::now());
+                            p.end_time = Some(Utc::now());
                             println!("Pomodoro finished for task {}.", task_id);
                         },
                     }
@@ -287,8 +301,8 @@ fn list_tasks(tasks: &[Task], list_archived: bool) {
         }
         let status = if task.done { "x" } else { " " };
         let time = match task.pomodoro_time_remaining() {
-            None => format!("Σ{} min", task.time_spent().as_secs() / 60),
-            Some(t) => format!("{}m {:0>2}s", t.as_secs() / 60, t.as_secs() % 60),
+            None => format!("Σ{} min", task.time_spent().num_minutes()),
+            Some(t) => format!("{}m {:0>2}s", t.num_minutes(), t.num_seconds() % 60),
         };
         let task_str = format!("{:0>3} [{}]: {} ({})", task.id, status, task.description, time);
         println!("{}", task_str);
@@ -347,6 +361,15 @@ fn unarchive_task(task_id: u32, tasks: &mut Vec<Task>) {
     }
 }
 
+fn archive_all_checked(tasks: &mut Vec<Task>) {
+    for task in tasks.iter_mut() {
+        if task.done {
+            task.archived = true;
+            println!("Task {} moved to archive.", task.id);
+        }
+    }
+}
+
 fn add_task(description: String, tasks: &mut Vec<Task>) {
     let next_id = tasks.iter().map(|task| task.id).max().unwrap_or(0) + 1;
     let task = Task::new(next_id, description);
@@ -355,13 +378,14 @@ fn add_task(description: String, tasks: &mut Vec<Task>) {
 }
 
 fn open_file() -> File {
-    let path = Path::new(TASK_FILE);
+    let filename = dirs::home_dir().unwrap().join(TASK_FILE);
+    let path = Path::new(&filename);
     let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .open(path)
-        .expect("Failed to open task file.");
+        .expect(format!("Failed to open task file {}.", path.display()).as_str());
     
     file.lock_exclusive()
         .expect("Failed to lock task file.");
@@ -392,8 +416,8 @@ fn compute_notifications(tasks: &mut Vec<Task>, notifications: &mut Vec<Notifica
     for task in tasks {
         match task.pomodoro_time_remaining() {
             Some(t) => {
-                if t.as_secs() <= 0 {
-                    task.pomodoros.last_mut().unwrap().end_time = Some(task.pomodoros.last().unwrap().start_time + POMODORO_DURATION);
+                if t.num_milliseconds() <= 0 {
+                    task.pomodoros.last_mut().unwrap().end_time = Some(task.pomodoros.last().unwrap().start_time + Duration::minutes(POMODORO_DURATION));
                     notifications.push(NotificationContent {
                         title: format!("Pomodoro finished for task {}.", task.id),
                         body: task.description.clone(),
@@ -411,7 +435,8 @@ fn display_notifications(notifications: Vec<NotificationContent>) {
         match Notification::new()
             .summary(&notification.title)
             .body(&notification.body)
-            .timeout(Timeout::Milliseconds(6000)) //milliseconds
+            .appname("pt")
+            .timeout(Timeout::Never)
             .show() {
                 Ok(_) => {},
                 Err(e) => println!("Failed to display notification: {}", e),
@@ -422,7 +447,7 @@ fn display_notifications(notifications: Vec<NotificationContent>) {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = Sink::try_new(&stream_handle).unwrap();
         // Load a sound from a file, using a path relative to Cargo.toml
-        let file = io::BufReader::new(File::open("alarm.mp3").unwrap());
+        let file = io::BufReader::new(File::open(dirs::home_dir().unwrap().join(ALARM_FILE)).unwrap());
         // Decode that sound file into a source
         let source = Decoder::new(file).unwrap();
         // Play the sound directly on the device
